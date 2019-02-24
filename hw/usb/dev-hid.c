@@ -30,6 +30,7 @@
 #include "qapi/error.h"
 #include "qemu/timer.h"
 #include "hw/input/hid.h"
+#include <poll.h>
 
 /* HID interface requests */
 #define GET_REPORT   0xa101
@@ -382,7 +383,7 @@ static const USBDescMSOS desc_msos_suspend = {
 static const USBDesc desc_mouse = {
     .id = {
         .idVendor          = 0x0627,
-        .idProduct         = 0x0001,
+        .idProduct         = 0x0002,
         .bcdDevice         = 0,
         .iManufacturer     = STR_MANUFACTURER,
         .iProduct          = STR_PRODUCT_MOUSE,
@@ -396,7 +397,7 @@ static const USBDesc desc_mouse = {
 static const USBDesc desc_mouse2 = {
     .id = {
         .idVendor          = 0x0627,
-        .idProduct         = 0x0001,
+        .idProduct         = 0x0002,
         .bcdDevice         = 0,
         .iManufacturer     = STR_MANUFACTURER,
         .iProduct          = STR_PRODUCT_MOUSE,
@@ -440,7 +441,7 @@ static const USBDesc desc_tablet2 = {
 static const USBDesc desc_keyboard = {
     .id = {
         .idVendor          = 0x0627,
-        .idProduct         = 0x0001,
+        .idProduct         = 0x0003,
         .bcdDevice         = 0,
         .iManufacturer     = STR_MANUFACTURER,
         .iProduct          = STR_PRODUCT_KEYBOARD,
@@ -454,7 +455,7 @@ static const USBDesc desc_keyboard = {
 static const USBDesc desc_keyboard2 = {
     .id = {
         .idVendor          = 0x0627,
-        .idProduct         = 0x0001,
+        .idProduct         = 0x0003,
         .bcdDevice         = 0,
         .iManufacturer     = STR_MANUFACTURER,
         .iProduct          = STR_PRODUCT_KEYBOARD,
@@ -676,13 +677,15 @@ static void usb_hid_handle_reset(USBDevice *dev)
 int g_hidraw_enable=1;
 static int hidraw_poll(USBHIDState *us, uint8_t *data, int length){
 	//read the actual device, non-blockingly
+	struct pollfd fds[1];
 	if(us->fd_hidraw<=0){return 0;}
-	if(!us->hid.n){return 0;}
-	if(length<1){return 0;}
-	us->hid.n=0;
-    qemu_set_fd_handler(us->fd_hidraw,hidraw_changed,NULL,us);
+	memset(fds,0,sizeof(fds));
+	fds[0].fd=us->fd_hidraw;
+	fds[0].events=POLLIN;
+	int poll_ret=poll(fds,1,0);
+	if(poll_ret<=0){return 0;}
 	int n_read=read(us->fd_hidraw,data,length);
-	return g_hidraw_enable&&n_read>0?n_read:0;
+	return n_read>0?n_read:0;
 }
 
 static void usb_hid_handle_control(USBDevice *dev, USBPacket *p,
@@ -697,6 +700,7 @@ static void usb_hid_handle_control(USBDevice *dev, USBPacket *p,
         return;
     }
 
+    //wait, they don't even validate the length? we have a fixed 4KB data buffer here
     switch (request) {
         /* hid specific requests */
     case InterfaceRequest | USB_REQ_GET_DESCRIPTOR:
@@ -714,6 +718,19 @@ static void usb_hid_handle_control(USBDevice *dev, USBPacket *p,
                 memcpy(data, qemu_keyboard_hid_report_descriptor,
                        sizeof(qemu_keyboard_hid_report_descriptor));
                 p->actual_length = sizeof(qemu_keyboard_hid_report_descriptor);
+            } else if (hs->kind == HID_HIDRAW) {
+                int fd=open(us->hid_descriptor,O_RDONLY);
+                if(fd<0){
+                    p->actual_length = 0;
+                }else{
+                	int n_read=read(fd,data,length);
+                	if(n_read<=0){
+                	    p->actual_length = 0;
+                	}else{
+                	    p->actual_length = n_read;
+                	}
+                	close(fd);
+                }
             }
             break;
         default:
@@ -725,24 +742,35 @@ static void usb_hid_handle_control(USBDevice *dev, USBPacket *p,
             p->actual_length = hid_pointer_poll(hs, data, length);
         } else if (hs->kind == HID_KEYBOARD) {
             p->actual_length = hid_keyboard_poll(hs, data, length);
+        } else if (hs->kind == HID_HIDRAW) {
+            p->actual_length = hidraw_poll(us, data, length);
         }
         break;
     case SET_REPORT:
         if (hs->kind == HID_KEYBOARD) {
             p->actual_length = hid_keyboard_write(hs, data, length);
+        } else if (hs->kind == HID_HIDRAW) {
+            p->actual_length = 0;
+            if(us->fd_hidraw>0&&length>0){
+                //it's normal to get a few bad reports before Windows loads
+                int n_written=write(us->fd_hidraw,data,length);
+                if(n_written!=length){
+                    goto fail;
+                }
+            }
         } else {
             goto fail;
         }
         break;
     case GET_PROTOCOL:
-        if (hs->kind != HID_KEYBOARD && hs->kind != HID_MOUSE) {
+        if (hs->kind != HID_KEYBOARD && hs->kind != HID_MOUSE && hs->kind != HID_HIDRAW) {
             goto fail;
         }
         data[0] = hs->protocol;
         p->actual_length = 1;
         break;
     case SET_PROTOCOL:
-        if (hs->kind != HID_KEYBOARD && hs->kind != HID_MOUSE) {
+        if (hs->kind != HID_KEYBOARD && hs->kind != HID_MOUSE && hs->kind != HID_HIDRAW) {
             goto fail;
         }
         hs->protocol = value;
@@ -787,6 +815,8 @@ static void usb_hid_handle_data(USBDevice *dev, USBPacket *p)
                 len = hid_pointer_poll(hs, buf, p->iov.size);
             } else if (hs->kind == HID_KEYBOARD) {
                 len = hid_keyboard_poll(hs, buf, p->iov.size);
+            } else if (hs->kind == HID_HIDRAW) {
+                len = hidraw_poll(us, buf, p->iov.size);
             }
             usb_packet_copy(p, buf, len);
         } else {
@@ -804,6 +834,10 @@ static void usb_hid_handle_data(USBDevice *dev, USBPacket *p)
 static void usb_hid_unrealize(USBDevice *dev, Error **errp)
 {
     USBHIDState *us = USB_HID(dev);
+    if(us->hid.kind==HID_HIDRAW&&us->fd_hidraw>0){
+        close(us->fd_hidraw);
+        us->fd_hidraw=0;
+    }
 
     hid_free(&us->hid);
 }
@@ -858,6 +892,7 @@ static void usb_keyboard_realize(USBDevice *dev, Error **errp)
     usb_hid_initfn(dev, HID_KEYBOARD, &desc_keyboard, &desc_keyboard2, errp);
 }
 
+static char g_read_test_buffer[4096];
 static void usb_hidraw_realize(USBDevice *dev, Error **errp)
 {
     USBHIDState *us = USB_HID(dev);
@@ -1059,6 +1094,7 @@ static const TypeInfo usb_hidraw_info = {
     .parent        = TYPE_USB_HID,
     .class_init    = usb_hidraw_class_initfn,
 };
+
 static void usb_hid_register_types(void)
 {
     type_register_static(&usb_hid_type_info);
@@ -1068,6 +1104,7 @@ static void usb_hid_register_types(void)
     usb_legacy_register("usb-mouse", "mouse", NULL);
     type_register_static(&usb_keyboard_info);
     usb_legacy_register("usb-kbd", "keyboard", NULL);
+    type_register_static(&usb_hidraw_info);
 }
 
 type_init(usb_hid_register_types)
