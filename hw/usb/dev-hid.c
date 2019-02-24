@@ -466,6 +466,68 @@ static const USBDesc desc_keyboard2 = {
     .msos = &desc_msos_suspend,
 };
 
+static const USBDescIface desc_iface_hidraw2 = {
+    .bInterfaceNumber              = 0,
+    .bNumEndpoints                 = 1,
+    .bInterfaceClass               = USB_CLASS_HID,
+    .bInterfaceSubClass            = 0x01, /* boot */
+    .bInterfaceProtocol            = 0x01, /* keyboard */
+    .ndesc                         = 1,
+    .descs = (USBDescOther[]) {
+        {
+            /* HID descriptor */
+            .data = (uint8_t[]) {
+                0x09,          /*  u8  bLength */
+                USB_DT_HID,    /*  u8  bDescriptorType */
+                0x11, 0x01,    /*  u16 HID_class */
+                0x00,          /*  u8  country_code */
+                0x01,          /*  u8  num_descriptors */
+                USB_DT_REPORT, /*  u8  type: Report */
+                0, 0,          /*  u16 len */
+            },
+        },
+    },
+    .eps = (USBDescEndpoint[]) {
+        {
+            .bEndpointAddress      = USB_DIR_IN | 0x01,
+            .bmAttributes          = USB_ENDPOINT_XFER_INT,
+            .wMaxPacketSize        = 1024,
+            .bInterval             = 4, /* 2 ^ (8-1) * 125 usecs = 8 ms */
+        },
+    },
+};
+
+static const USBDescDevice desc_device_hidraw2 = {
+    .bcdUSB                        = 0x0200,
+    .bMaxPacketSize0               = 64,
+    .bNumConfigurations            = 1,
+    .confs = (USBDescConfig[]) {
+        {
+            .bNumInterfaces        = 1,
+            .bConfigurationValue   = 1,
+            .iConfiguration        = STR_CONFIG_KEYBOARD,
+            .bmAttributes          = USB_CFG_ATT_ONE | USB_CFG_ATT_WAKEUP,
+            .bMaxPower             = 50,
+            .nif = 1,
+            .ifs = &desc_iface_hidraw2,
+        },
+    },
+};
+
+static const USBDesc desc_hidraw2 = {
+    .id = {
+        .idVendor          = 0x0627,
+        .idProduct         = 0x0004,
+        .bcdDevice         = 0,
+        .iManufacturer     = STR_MANUFACTURER,
+        .iProduct          = STR_PRODUCT_KEYBOARD,
+        .iSerialNumber     = STR_SERIALNUMBER,
+    },
+    .high = &desc_device_hidraw2,
+    .str  = desc_strings,
+    .msos = &desc_msos_suspend,
+};
+
 static const uint8_t qemu_mouse_hid_report_descriptor[] = {
     0x05, 0x01,		/* Usage Page (Generic Desktop) */
     0x09, 0x02,		/* Usage (Mouse) */
