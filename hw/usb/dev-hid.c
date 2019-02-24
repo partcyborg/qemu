@@ -51,6 +51,11 @@ typedef struct USBHIDState {
     uint32_t usb_version;
     char *display;
     uint32_t head;
+    char *hid_device;
+    char *hid_descriptor;
+    int fd_hidraw;
+    uint8_t subclass,protocol;
+    uint32_t product_id;
 } USBHIDState;
 
 #define TYPE_USB_HID "usb-hid"
@@ -573,11 +578,48 @@ static void usb_hid_changed(HIDState *hs)
     usb_wakeup(us->intr, 0);
 }
 
+static char g_read_test_buffer[4096];
+
+static void hidraw_changed(void *opaque)
+{
+    USBHIDState *us = (USBHIDState*)opaque;
+    if(!us->hid.n){
+		qemu_set_fd_handler(us->fd_hidraw, NULL, NULL, NULL);
+		us->hid.n=1;
+		usb_hid_changed(&us->hid);
+    }
+}
+
 static void usb_hid_handle_reset(USBDevice *dev)
 {
     USBHIDState *us = USB_HID(dev);
 
+    if(us->hid.kind==HID_HIDRAW&&us->fd_hidraw>0&&us->hid.n){
+       	//discard all
+       	for(;;){
+           	struct pollfd fds[1];
+           	memset(fds,0,sizeof(fds));
+           	fds[0].fd=us->fd_hidraw;
+           	fds[0].events=POLLIN;
+           	if(poll(fds,1,0)<=0){break;}
+           	int n_read=read(us->fd_hidraw,g_read_test_buffer,4096);
+           	if(n_read<=0){break;}
+       	}
+		us->hid.n=0;
+		qemu_set_fd_handler(us->fd_hidraw,hidraw_changed,NULL,us);
+    }
     hid_reset(&us->hid);
+}
+
+static int hidraw_poll(USBHIDState *us, uint8_t *data, int length){
+	//read the actual device, non-blockingly
+	if(us->fd_hidraw<=0){return 0;}
+	if(!us->hid.n){return 0;}
+	if(length<1){return 0;}
+	us->hid.n=0;
+    qemu_set_fd_handler(us->fd_hidraw,hidraw_changed,NULL,us);
+	int n_read=read(us->fd_hidraw,data,length);
+	return n_read>0?n_read:0;
 }
 
 static void usb_hid_handle_control(USBDevice *dev, USBPacket *p,
@@ -616,7 +658,7 @@ static void usb_hid_handle_control(USBDevice *dev, USBPacket *p,
         }
         break;
     case GET_REPORT:
-        if (hs->kind == HID_MOUSE || hs->kind == HID_TABLET) {
+    	if (hs->kind == HID_MOUSE || hs->kind == HID_TABLET) {
             p->actual_length = hid_pointer_poll(hs, data, length);
         } else if (hs->kind == HID_KEYBOARD) {
             p->actual_length = hid_keyboard_poll(hs, data, length);
@@ -728,7 +770,11 @@ static void usb_hid_initfn(USBDevice *dev, int kind,
     usb_desc_init(dev);
     us->intr = usb_ep_get(dev, USB_TOKEN_IN, 1);
     hid_init(&us->hid, kind, usb_hid_changed);
-    if (us->display && us->hid.s) {
+    if(kind==HID_HIDRAW){
+        us->hid.n=0;
+        qemu_set_fd_handler(us->fd_hidraw,hidraw_changed,NULL,us);
+    }
+    if (us->display && us->hid.s&&kind!=HID_HIDRAW) {
         qemu_input_handler_bind(us->hid.s, us->display, us->head, NULL);
     }
 }
@@ -747,6 +793,48 @@ static void usb_mouse_realize(USBDevice *dev, Error **errp)
 static void usb_keyboard_realize(USBDevice *dev, Error **errp)
 {
     usb_hid_initfn(dev, HID_KEYBOARD, &desc_keyboard, &desc_keyboard2, errp);
+}
+
+static void usb_hidraw_realize(USBDevice *dev, Error **errp)
+{
+    USBHIDState *us = USB_HID(dev);
+    if(!us->hid_device){
+        error_setg(errp, "usb hidraw needs hid_device");
+        return;
+    }
+    if(!us->hid_descriptor){
+        error_setg(errp, "usb hidraw needs hid_descriptor");
+        return;
+    }
+    us->fd_hidraw=open(us->hid_device,O_RDWR);
+    if(us->fd_hidraw<0){
+        error_setg(errp, "unable to open '%s', error %d",us->hid_device,us->fd_hidraw);
+        return;
+    }
+    USBDesc* new_desc_hidraw2=(USBDesc*)malloc(sizeof(desc_hidraw2));
+    memcpy(new_desc_hidraw2,&desc_hidraw2,sizeof(desc_hidraw2));
+    new_desc_hidraw2->id.idProduct=us->product_id;
+    new_desc_hidraw2->high=(USBDescDevice*)malloc(sizeof(desc_device_hidraw2));
+    memcpy((void*)new_desc_hidraw2->high,&desc_device_hidraw2,sizeof(desc_device_hidraw2));
+    ((USBDescDevice*)new_desc_hidraw2->high)->confs=(USBDescConfig*)malloc(sizeof(USBDescConfig));
+    memcpy((void*)((USBDescDevice*)new_desc_hidraw2->high)->confs,desc_device_hidraw2.confs,sizeof(USBDescConfig));
+    ((USBDescConfig*)((USBDescDevice*)new_desc_hidraw2->high)->confs)[0].ifs=(USBDescIface*)malloc(sizeof(USBDescIface));
+    memcpy((void*)((USBDescConfig*)((USBDescDevice*)new_desc_hidraw2->high)->confs)[0].ifs,&desc_iface_hidraw2,sizeof(desc_iface_hidraw2));
+    ((USBDescIface*)((USBDescConfig*)((USBDescDevice*)new_desc_hidraw2->high)->confs)[0].ifs)->descs=(USBDescOther*)malloc(sizeof(USBDescOther));
+    memcpy((void*)((USBDescIface*)((USBDescConfig*)((USBDescDevice*)new_desc_hidraw2->high)->confs)[0].ifs)->descs,desc_iface_hidraw2.descs,sizeof(USBDescOther));
+    ((USBDescIface*)((USBDescConfig*)((USBDescDevice*)new_desc_hidraw2->high)->confs)[0].ifs)->bInterfaceSubClass=us->subclass;
+    ((USBDescIface*)((USBDescConfig*)((USBDescDevice*)new_desc_hidraw2->high)->confs)[0].ifs)->bInterfaceProtocol=us->protocol;
+    ((USBDescIface*)((USBDescConfig*)((USBDescDevice*)new_desc_hidraw2->high)->confs)[0].ifs)->descs->data=(uint8_t*)malloc(9);
+    memcpy((void*)((USBDescIface*)((USBDescConfig*)((USBDescDevice*)new_desc_hidraw2->high)->confs)[0].ifs)->descs->data,desc_iface_hidraw2.descs->data,9);
+    int n_read=0;
+    int fd=open(us->hid_descriptor,O_RDONLY);
+    if(fd>0){
+    	n_read=read(fd,g_read_test_buffer,4096);
+    	close(fd);
+    }
+    ((uint8_t*)new_desc_hidraw2->high->confs[0].ifs->descs->data)[7]=(uint8_t)((uint32_t)(n_read&0xff));
+    ((uint8_t*)new_desc_hidraw2->high->confs[0].ifs->descs->data)[8]=(uint8_t)((uint32_t)((n_read>>8)&0xff));
+    usb_hid_initfn(dev, HID_HIDRAW, NULL, new_desc_hidraw2, errp);
 }
 
 static int usb_ptr_post_load(void *opaque, int version_id)
@@ -873,6 +961,38 @@ static const TypeInfo usb_keyboard_info = {
     .class_init    = usb_keyboard_class_initfn,
 };
 
+static const VMStateDescription vmstate_usb_hidraw = {
+	.name = "usb-hidraw",
+	.unmigratable = 1,
+};
+
+static Property usb_hidraw_properties[] = {
+	DEFINE_PROP_UINT32("usb_version", USBHIDState, usb_version, 2),
+	DEFINE_PROP_STRING("hid_device", USBHIDState, hid_device),
+	DEFINE_PROP_STRING("hid_descriptor", USBHIDState, hid_descriptor),
+	DEFINE_PROP_UINT8("subclass", USBHIDState, subclass, 1),
+	DEFINE_PROP_UINT8("protocol", USBHIDState, protocol, 1),
+	DEFINE_PROP_UINT32("product_id", USBHIDState, product_id, 4),
+	DEFINE_PROP_END_OF_LIST(),
+};
+
+static void usb_hidraw_class_initfn(ObjectClass *klass, void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+    USBDeviceClass *uc = USB_DEVICE_CLASS(klass);
+
+    uc->realize        = usb_hidraw_realize;
+    uc->product_desc   = "QEMU USB hidraw";
+    dc->vmsd = &vmstate_usb_hidraw;
+    dc->props = usb_hidraw_properties;
+    set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
+}
+
+static const TypeInfo usb_hidraw_info = {
+    .name          = "usb-hidraw",
+    .parent        = TYPE_USB_HID,
+    .class_init    = usb_hidraw_class_initfn,
+};
 static void usb_hid_register_types(void)
 {
     type_register_static(&usb_hid_type_info);
