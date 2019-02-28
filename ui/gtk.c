@@ -1324,6 +1324,19 @@ static void gd_accel_full_screen(void *opaque)
     gtk_menu_item_activate(GTK_MENU_ITEM(s->full_screen_item));
 }
 
+static void gd_accel_lock(void *opaque)
+{
+	gd_accel_full_screen(opaque);
+	int a=system("su -c 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus qdbus org.freedesktop.ScreenSaver /ScreenSaver Lock' `id -un 1000`");
+	a=a;
+}
+
+static void gd_lock_vc(GtkMenuItem *item, void *opaque)
+{
+	int a=system("su -c 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus qdbus org.freedesktop.ScreenSaver /ScreenSaver Lock' `id -un 1000`");
+	a=a;
+}
+
 static void gd_menu_zoom_in(GtkMenuItem *item, void *opaque)
 {
     GtkDisplayState *s = opaque;
