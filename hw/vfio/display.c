@@ -286,7 +286,7 @@ static void vfio_display_dmabuf_update(void *opaque)
     VFIOPCIDevice *vdev = opaque;
     VFIODisplay *dpy = vdev->dpy;
     VFIODMABuf *primary, *cursor;
-    bool free_bufs = false, new_cursor = false;;
+    bool free_bufs = false, new_cursor = false, updated_any=false;
 
     primary = vfio_display_get_dmabuf(vdev, DRM_PLANE_TYPE_PRIMARY);
     if (primary == NULL) {
@@ -302,6 +302,7 @@ static void vfio_display_dmabuf_update(void *opaque)
                             primary->buf.width, primary->buf.height);
         dpy_gl_scanout_dmabuf(dpy->con, &primary->buf);
         free_bufs = true;
+        updated_any = true;
     }
 
     cursor = vfio_display_get_dmabuf(vdev, DRM_PLANE_TYPE_CURSOR);
@@ -309,6 +310,7 @@ static void vfio_display_dmabuf_update(void *opaque)
         dpy->dmabuf.cursor = cursor;
         new_cursor = true;
         free_bufs = true;
+        updated_any = true;
     }
 
     if (cursor && (new_cursor || cursor->hot_updates)) {
@@ -317,8 +319,10 @@ static void vfio_display_dmabuf_update(void *opaque)
         dpy_gl_cursor_dmabuf(dpy->con, &cursor->buf, have_hot,
                              cursor->hot_x, cursor->hot_y);
         cursor->hot_updates = 0;
+        updated_any = true;
     } else if (!cursor && new_cursor) {
         dpy_gl_cursor_dmabuf(dpy->con, NULL, false, 0, 0);
+        updated_any = true;
     }
 
     if (cursor && cursor->pos_updates) {
@@ -326,9 +330,12 @@ static void vfio_display_dmabuf_update(void *opaque)
                                cursor->pos_x,
                                cursor->pos_y);
         cursor->pos_updates = 0;
+        updated_any = true;
     }
 
-    dpy_gl_update(dpy->con, 0, 0, primary->buf.width, primary->buf.height);
+    if(updated_any){
+        dpy_gl_update(dpy->con, 0, 0, primary->buf.width, primary->buf.height);
+    }
 
     if (free_bufs) {
         vfio_display_free_dmabufs(vdev);
