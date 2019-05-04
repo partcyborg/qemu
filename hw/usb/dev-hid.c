@@ -74,6 +74,7 @@ enum {
     STR_SERIAL_MOUSE,
     STR_SERIAL_TABLET,
     STR_SERIAL_KEYBOARD,
+    STR_SERIALNUMBER,
 };
 
 static const USBDescStrings desc_strings = {
