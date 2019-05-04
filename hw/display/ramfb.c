@@ -68,7 +68,7 @@ static void ramfb_fw_cfg_write(void *dev, off_t offset, size_t len)
     s->height=height;
     //framebuffer = address_space_map(&address_space_memory,
     //                                addr, &length, false,
-    //                                MEMTXATTRS_UNSPECIFIED);
+     //                               MEMTXATTRS_UNSPECIFIED);
     //if (!framebuffer || length < stride * s->height) {
     //    s->width = 0;
     //    s->height = 0;
@@ -76,11 +76,11 @@ static void ramfb_fw_cfg_write(void *dev, off_t offset, size_t len)
     //}
     //s->ds = qemu_create_displaysurface_from(s->width, s->height,
     //                                        format, stride, framebuffer);
-    s->ds = qemu_create_displaysurface_guestmem(s->width, s->height,
-                                            format, stride, s->addr);
-    //void* framebuffer_x=(void*)calloc(1,length);
-    //s->ds = qemu_create_displaysurface_from(s->width, s->height,
-    //                                        format, stride, framebuffer_x);
+    //s->ds = qemu_create_displaysurface_guestmem(s->width, s->height,
+    //                                        format, stride, s->addr);
+    void* framebuffer_x=(void*)calloc(1,length);
+    s->ds = qemu_create_displaysurface_from(s->width, s->height,
+                                            format, stride, framebuffer_x);
 }
 
 void ramfb_display_update(QemuConsole *con, RAMFBState *s)
